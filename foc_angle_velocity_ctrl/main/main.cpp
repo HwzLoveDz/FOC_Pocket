@@ -1,0 +1,191 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "esp_log.h"
+#include "esp_simplefoc.h"
+
+#if CONFIG_SOC_MCPWM_SUPPORTED
+#define USING_MCPWM
+#endif
+
+// 定义GPIO引脚
+#define LED_GPIO GPIO_NUM_0
+
+// 硬件对象定义
+BLDCMotor motor = BLDCMotor(14 / 2, 6.5 / 2, 330, (1.2333e-3) / 2);
+BLDCDriver6PWM driver = BLDCDriver6PWM(11, 14, 12, 15, 13, 16, 17, 0);
+MA600A ma600a = MA600A(SPI2_HOST, GPIO_NUM_21, GPIO_NUM_7, GPIO_NUM_8, GPIO_NUM_9);
+
+// 全局变量
+float target_angle = 0;
+Commander command = Commander();
+QueueHandle_t angle_queue = NULL;
+
+// 目标角度设置函数
+void doTarget(char* cmd) { 
+    target_angle = atof(cmd); 
+    // printf("Set target angle to: %.2f\n", target_angle);
+    // 将新角度发送到队列
+    xQueueSend(angle_queue, &target_angle, portMAX_DELAY);
+}
+
+// 电机控制任务
+void motor_control_task(void *pvParameters) {
+    float current_target = 0;
+
+    while (1) {
+        // 从队列获取最新目标角度（非阻塞）
+        if (xQueueReceive(angle_queue, &current_target, 0) == pdTRUE) {
+            target_angle = current_target;
+        }
+        
+        // main FOC algorithm function
+        // the faster you run this function the better
+        motor.loopFOC();
+        
+        // Motion control function
+        // velocity, position or voltage (defined in motor.controller)
+        // this function can be run at much lower frequency than loopFOC() function
+        // You can also use motor.move() and set the motor.target in the code
+        motor.move(target_angle);
+        
+        // get the current angle from the sensor
+        float rad_angle = ma600a.getSensorAngle();
+        // current_angle = (rad_angle / (2 * PI)) * 360
+        printf("current angle: %.2f\n", rad_angle * 180 / PI);
+
+        // 适当延迟以保持控制频率
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+}
+
+// 命令处理任务
+void command_task(void *pvParameters) {
+    char command_sequence[][10] = {
+        "T-0.003", // 约0度 (0) 限制0点防止过0
+        // "T-6.28",
+        // "T6.28",
+        // "T-6.28",
+        // "T6.28",
+
+        "T-1.57", // 约90度 (π/2)
+        "T-3.14", // 约180度 (π)
+        "T-4.71", // 约270度 (3π/2)
+        "T-6.28", // 约360度 (2π)
+    };
+    
+    const int sequence_length = sizeof(command_sequence) / sizeof(command_sequence[0]);
+    int current_step = 0;
+
+    while (1) {
+        // 执行当前命令
+        gpio_set_level(LED_GPIO, 0);
+
+        // printf("Executing: %s\n", command_sequence[current_step]);
+        command.run(command_sequence[current_step]);
+        
+        // 移动到下一个命令
+        current_step = (current_step + 1) % sequence_length;
+
+        // 2秒间隔
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        gpio_set_level(LED_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+extern "C" void app_main(void) {
+
+    // 1. GPIO配置
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << LED_GPIO),  // 选择GPIO0
+        .mode = GPIO_MODE_OUTPUT,            // 输出模式
+        .pull_up_en = GPIO_PULLUP_DISABLE,   // 禁用上拉
+        .pull_down_en = GPIO_PULLDOWN_DISABLE, // 禁用下拉
+        .intr_type = GPIO_INTR_DISABLE       // 禁用中断
+    };
+    gpio_config(&io_conf);
+
+    // 2. 点亮LED（设置低电平，因为开发板LED通常是低电平驱动）
+    gpio_set_level(LED_GPIO, 1);
+
+    printf("LED on GPIO0 is now ON\n");
+
+    // initialise magnetic sensor hardware
+    ma600a.init();
+    // link the motor to the sensor
+    motor.linkSensor(&ma600a);
+
+    // driver config
+    // power supply voltage [V]
+    driver.voltage_power_supply = 8.4;
+    driver.voltage_limit = 7.4;
+    // pwm frequency [Hz]
+    // 20kHz is the default value
+    driver.pwm_frequency = 50000;
+    driver.init();
+    // link the motor to the driver
+    motor.linkDriver(&driver);
+
+    // choose FOC modulation (optional)
+    motor.foc_modulation = FOCModulationType::SpaceVectorPWM;
+
+    // set motion control loop to be used
+    motor.controller = MotionControlType::angle;
+
+    // contoller configuration
+    // default parameters in defaults.h
+
+    // velocity PI controller parameters
+    motor.PID_velocity.P = 0.03f;
+    motor.PID_velocity.I = 1;
+    motor.PID_velocity.D = 0.0001f;
+    // maximal voltage to be set to the motor
+    motor.voltage_limit = 2.0;
+
+    // velocity low pass filtering time constant
+    // the lower the less filtered
+    motor.LPF_velocity.Tf = 0.01f;
+
+    // angle P controller
+    motor.P_angle.P = 20;
+    // maximal velocity of the position control
+    motor.velocity_limit = 6.28 * 3;
+
+    // initialize motor
+    motor.init();
+    // align sensor and start FOC
+    motor.initFOC();
+
+    // add target command T
+    command.add('T', doTarget, (char*)"target angle");
+
+    // 创建角度队列（最多存储5个角度值）
+    angle_queue = xQueueCreate(5, sizeof(float));
+    
+    // 创建任务
+    xTaskCreatePinnedToCore(
+        motor_control_task,    // 任务函数
+        "motor_control",       // 任务名称
+        4096,                 // 堆栈大小
+        NULL,                 // 参数
+        configMAX_PRIORITIES - 1, // 高优先级
+        NULL,                 // 任务句柄
+        0                     // 核心0
+    );
+    
+    xTaskCreatePinnedToCore(
+        command_task,          // 任务函数
+        "command",            // 任务名称
+        4096,                 // 堆栈大小
+        NULL,                 // 参数
+        configMAX_PRIORITIES - 2, // 稍低优先级
+        NULL,                 // 任务句柄
+        1                     // 核心1
+    );
+
+    printf("Motor control system started\n");
+}
