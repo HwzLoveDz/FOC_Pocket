@@ -1,5 +1,6 @@
 # FOC_Pocket
 Utilizes the MA600A magnetic encoder, MP6541A integrated brushless motor driver, and ESP32-S3 microcontroller. The example includes position control, speed control, torque control, voltage sensing, and current sensing. The computation library is implemented with SimpleFOC
+# 硬件开源地址：https://oshwhub.com/mondraker/coin-size-foc-brushless-gimbal-d
 ### 题外话
 longlonglong time no seeeee!
 工作之后好久没有开源东西了，做了好多项目在并行结果都进展缓慢。。。最近一个<u>**帅哥朋友**</u>说立创和MPS办了活动，问我有没有兴趣一起参加下，本想着简单浏览下MPS的芯片，结果瞄到了一款集成hall电流检测和三相半桥的无刷电机驱动器，又看了看前两天在某宝激情下单的野生6元2204云台电机--可以，瞌睡遇上枕头了。其实一直是想学习下BLDC电机和FOC控制的，奈何一直没时间，于是这次抽了两周时间和朋友趁下班时间熬夜边学边肝，肝出来一个**含MPS量极高的FOC控制器**，暂且称它**FOC_Pocket**
