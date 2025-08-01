@@ -13,10 +13,10 @@
 void app_main(void)
 {
     adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC_CHANNEL, ADC_ATTEN_DB_11); // 0~3.3V
+    adc1_config_channel_atten(ADC_CHANNEL, ADC_ATTEN_DB_12); // 0~3.3V
 
     esp_adc_cal_characteristics_t adc_chars;
-    esp_adc_cal_characterize(ADC_UNIT, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, DEFAULT_VREF, &adc_chars);
+    esp_adc_cal_characterize(ADC_UNIT, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, DEFAULT_VREF, &adc_chars);
 
     while (1) {
         int raw = adc1_get_raw(ADC_CHANNEL);
